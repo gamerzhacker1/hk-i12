@@ -49,61 +49,40 @@ async def role(interaction: discord.Interaction, userid: str, role: str):
     save_json(ROLES_FILE, roles)
     await interaction.response.send_message(f"✅ Role set: <@{userid}> = `{role}`")
 
-@tree.command(name="create-vps", description="Create a VPS (admin unlimited)")
-async def create_vps(interaction: discord.Interaction):
-    await interaction.response.defer()
-    uid = str(interaction.user.id)
-    data = load_json(USERS_FILE)
-    roles = load_json(ROLES_FILE)
-    is_admin = roles.get(uid) == "admin"
 
-    if uid in data and not is_admin:
-        await interaction.followup.send("❌ You are only allowed 1 VPS.")
-        return
+@tree.command(name="create_vps", description="⚙️ Creating Your VPS...")
+async def create_vps(ctx):
+    if not is_admin(ctx.author.id):
+        return await ctx.send("❌ Only admins can use this command.")
+    
+    await ctx.send("⚙️ Creating Your VPS...")
 
-    await interaction.followup.send("⚙️ Creating your VPS...")
-
+    # Run tmate and capture SSH
     try:
-        # Run tmate -F
-        proc = subprocess.Popen(["tmate", "-F"], stdout=subprocess.PIPE, text=True)
-        await asyncio.sleep(7)
-        output = proc.stdout.read()
-        ssh_line = next((l for l in output.splitlines() if "ssh" in l), "N/A")
+        proc = subprocess.Popen(["tmate", "-F"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = proc.communicate(timeout=10)
+        if proc.returncode != 0:
+            await ctx.send(f"❌ Error: {stderr.decode()}")
+            return
 
-        # Run Playit
-        playit_proc = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, text=True)
-        await asyncio.sleep(6)
-        forwarded_ip, forwarded_port = "N/A", "N/A"
+        ssh_line = next((line for line in stdout.decode().split("\\n") if line.strip().startswith("ssh")), "Unknown")
 
-        for line in playit_proc.stdout:
-            if "Forwarding TCP" in line:
-                forwarded_ip = line.split(" -> ")[1].split(":")[0]
-                forwarded_port = line.split(":")[1]
-                break
-
-        vps = {
+        user_data = load_data()
+        user_data[str(ctx.author.id)] = {
             "ssh": ssh_line,
-            "ip": forwarded_ip,
-            "port": forwarded_port,
-            "pass": "root",
-            "hostname": f"vps-{uid}",
-            "ram": "2GB", "cpu": "1 Core", "disk": "10GB",
-            "location": "IN"
+            "os": "Ubuntu 22.04",
+            "password": "root"
         }
-        data[uid] = vps
-        save_json(USERS_FILE, data)
+        save_data(user_data)
 
-        msg = f"""✅ **VPS Created**
-**SSH:** `{ssh_line}`
-**IP:** `{forwarded_ip}` | **Port:** `{forwarded_port}`
-**User:** `root` | **Pass:** `root`
-**Hostname:** `{vps['hostname']}`
-**RAM:** {vps['ram']} | **CPU:** {vps['cpu']} | **Disk:** {vps['disk']}
-**Location:** {vps['location']}"""
-        await interaction.user.send(msg)
-        await interaction.followup.send("📬 VPS info sent in DM.")
+        await ctx.author.send(
+            f"✅ Successfully created Instance\\n"
+            f"**SSH Session Command:**\\n```{ssh_line}```\\n"
+            f"OS: Ubuntu 22.04\\nPassword: root"
+        )
+        await ctx.send("✅ VPS details sent to your DM.")
     except Exception as e:
-        await interaction.followup.send(f"❌ VPS error: {str(e)}")
+        await ctx.send(f"❌ Exception: {e}")
 
 @tree.command(name="myvps", description="Show your VPS info")
 async def myvps(interaction: discord.Interaction):
