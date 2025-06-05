@@ -1,213 +1,218 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
+import subprocess
+import asyncio
 import json
 import os
-import random
 
-TOKEN = "BOT_TOKEN"
-DATA_FILE = "vps_users.json"
-TEXT_FILE = "texts.json"
-ADMIN_IDS = [1159037240622723092]  # replace with your admin user ID(s)
+TOKEN = "YOUR_BOT_TOKEN"  # Replace with your bot token
+ADMIN_ID = "1159037240622723092"
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="/", intents=intents)
+tree = bot.tree
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+# JSON data files
+USERS_FILE = "vps_data.json"
+ROLES_FILE = "roles.json"
+TEXTS_FILE = "texts.json"
+SHARE_FILE = "share.json"
 
-def load_data():
-    return json.load(open(DATA_FILE)) if os.path.exists(DATA_FILE) else {}
+# JSON helpers
+def load_json(file):
+    if not os.path.exists(file): return {}
+    with open(file, 'r') as f: return json.load(f)
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def save_json(file, data):
+    with open(file, 'w') as f: json.dump(data, f, indent=4)
 
-def load_texts():
-    return json.load(open(TEXT_FILE)) if os.path.exists(TEXT_FILE) else {}
+@bot.event
+async def on_ready():
+    await tree.sync()
+    print(f"✅ Bot ready as {bot.user}")
 
-def save_texts(data):
-    with open(TEXT_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+@tree.command(name="ping", description="Check bot latency")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message(f"Pong! `{round(bot.latency * 1000)}ms`")
 
-class VPSManager(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+@tree.command(name="adminadd", description="Make user admin")
+async def adminadd(interaction: discord.Interaction, userid: str):
+    roles = load_json(ROLES_FILE)
+    roles[userid] = "admin"
+    save_json(ROLES_FILE, roles)
+    await interaction.response.send_message(f"✅ <@{userid}> promoted to admin.")
 
-    
-    @app_commands.command(name="create-vps", description="Create a VPS with SSH using tmate and playit.gg")
-    async def create_vps(self, interaction: discord.Interaction):
+@tree.command(name="role", description="Set user role")
+async def role(interaction: discord.Interaction, userid: str, role: str):
+    roles = load_json(ROLES_FILE)
+    roles[userid] = role
+    save_json(ROLES_FILE, roles)
+    await interaction.response.send_message(f"✅ Role set: <@{userid}> = `{role}`")
+
+@tree.command(name="create-vps", description="Create a VPS (admin unlimited)")
+async def create_vps(interaction: discord.Interaction):
+    await interaction.response.defer()
+    uid = str(interaction.user.id)
+    data = load_json(USERS_FILE)
+    roles = load_json(ROLES_FILE)
+    is_admin = roles.get(uid) == "admin"
+
+    if uid in data and not is_admin:
+        await interaction.followup.send("❌ You are only allowed 1 VPS.")
+        return
+
+    await interaction.followup.send("⚙️ Creating your VPS...")
+
+    try:
+        # Run tmate -F
+        proc = subprocess.Popen(["tmate", "-F"], stdout=subprocess.PIPE, text=True)
+        await asyncio.sleep(7)
+        output = proc.stdout.read()
+        ssh_line = next((l for l in output.splitlines() if "ssh" in l), "N/A")
+
+        # Run Playit
+        playit_proc = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, text=True)
+        await asyncio.sleep(6)
+        forwarded_ip, forwarded_port = "N/A", "N/A"
+
+        for line in playit_proc.stdout:
+            if "Forwarding TCP" in line:
+                forwarded_ip = line.split(" -> ")[1].split(":")[0]
+                forwarded_port = line.split(":")[1]
+                break
+
+        vps = {
+            "ssh": ssh_line,
+            "ip": forwarded_ip,
+            "port": forwarded_port,
+            "pass": "root",
+            "hostname": f"vps-{uid}",
+            "ram": "2GB", "cpu": "1 Core", "disk": "10GB",
+            "location": "IN"
+        }
+        data[uid] = vps
+        save_json(USERS_FILE, data)
+
+        msg = f"""✅ **VPS Created**
+**SSH:** `{ssh_line}`
+**IP:** `{forwarded_ip}` | **Port:** `{forwarded_port}`
+**User:** `root` | **Pass:** `root`
+**Hostname:** `{vps['hostname']}`
+**RAM:** {vps['ram']} | **CPU:** {vps['cpu']} | **Disk:** {vps['disk']}
+**Location:** {vps['location']}"""
+        await interaction.user.send(msg)
+        await interaction.followup.send("📬 VPS info sent in DM.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ VPS error: {str(e)}")
+
+@tree.command(name="myvps", description="Show your VPS info")
+async def myvps(interaction: discord.Interaction):
+    data = load_json(USERS_FILE)
+    uid = str(interaction.user.id)
+    if uid not in data:
+        await interaction.response.send_message("❌ You have no VPS.")
+        return
+    v = data[uid]
+    msg = f"""🔍 **Your VPS Info**
+**SSH:** `{v['ssh']}`
+**IP:** `{v['ip']}` | **Port:** `{v['port']}`
+**Hostname:** `{v['hostname']}`
+**RAM:** {v['ram']} | **CPU:** {v['cpu']} | **Disk:** {v['disk']}
+**Location:** {v['location']}"""
+    await interaction.response.send_message(msg)
+
+@tree.command(name="port_add", description="Forward local port using Playit")
+async def port_add(interaction: discord.Interaction, localport: int):
+    await interaction.response.defer()
+    try:
+        playit_proc = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, text=True)
+        await asyncio.sleep(6)
+        for line in playit_proc.stdout:
+            if f"127.0.0.1:{localport}" in line:
+                msg = f"✅ Port `{localport}` forwarded to: `{line.split(' -> ')[1].strip()}`"
+                await interaction.followup.send(msg)
+                return
+        await interaction.followup.send("❌ No match found.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)}")
+
+@tree.command(name="create_list", description="Save VPS as list name")
+async def create_list(interaction: discord.Interaction, name: str):
+    data = load_json(USERS_FILE)
+    uid = str(interaction.user.id)
+    if uid not in data:
+        await interaction.response.send_message("❌ No VPS found.")
+        return
+    ssh = data[uid]["ssh"]
+    os.makedirs("ssh_lists", exist_ok=True)
+    with open(f"ssh_lists/{name}.txt", "w") as f:
+        f.write(ssh)
+    await interaction.response.send_message(f"✅ List `{name}` saved.")
+
+@tree.command(name="node", description="Show VPS Node Info")
+async def node(interaction: discord.Interaction):
+    await interaction.response.send_message("📡 Node: `IN`\nRAM: 2GB | CPU: 1 Core | Disk: 10GB\n🛠️ Made by Gamerzhacker")
+
+@tree.command(name="nodeadmin", description="Show all VPS info (admin)")
+async def nodeadmin(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Admins only.")
+        return
+    data = load_json(USERS_FILE)
+    msg = "**🔐 All VPS:**\n"
+    for uid, v in data.items():
+        msg += f"<@{uid}> — {v['location']}\n"
+    await interaction.response.send_message(msg)
+
+@tree.command(name="list", description="Show all users and location")
+async def list_users(interaction: discord.Interaction):
+    data = load_json(USERS_FILE)
+    msg = "**👥 Users:**\n"
+    for uid, v in data.items():
+        msg += f"<@{uid}> | {v['location']}\n"
+    await interaction.response.send_message(msg)
+
+@tree.command(name="share", description="Share VPS with another user")
+async def share(interaction: discord.Interaction, targetid: str):
+    uid = str(interaction.user.id)
+    shared = load_json(SHARE_FILE)
+    if uid not in shared:
+        shared[uid] = []
+    if targetid not in shared[uid]:
+        shared[uid].append(targetid)
+        save_json(SHARE_FILE, shared)
+        await interaction.response.send_message(f"✅ VPS shared with <@{targetid}>.")
+    else:
+        await interaction.response.send_message("❌ Already shared.")
+
+@tree.command(name="create-text", description="Create or get text (admin only)")
+async def create_text(interaction: discord.Interaction, name: str, msg: str = None):
+    texts = load_json(TEXTS_FILE)
+    if msg:  # create mode
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Admin only.")
+            return
+        texts[name] = msg
+        save_json(TEXTS_FILE, texts)
+        await interaction.response.send_message(f"✅ Text `{name}` saved.")
+    else:  # get mode
+        if name not in texts:
+            await interaction.response.send_message("❌ Not found.")
+            return
+        await interaction.response.send_message(f"📄 **{name}:** {texts[name]}")
+@tree.command(name="port_add", description="Forward local port using playit.gg")
+    async def port_add(self, interaction: discord.Interaction, localport: int):
         await interaction.response.defer()
-        user_id = str(interaction.user.id)
-
-        password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-        hostname = f"vps-{random.randint(1000,9999)}"
-
         try:
-            tmate_proc = subprocess.Popen(["tmate", "-F"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            playit_proc = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-            await asyncio.sleep(5)
-
-            ip, port = "N/A", "N/A"
-            for line in playit_proc.stdout:
-                if "Forwarding TCP" in line:
-                    ip_port = line.strip().split()[3]
-                    ip, port = ip_port.split(":")
+            proc = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            await asyncio.sleep(6)
+            msg = "❌ Could not find forwarded port."
+            for line in proc.stdout:
+                if f"127.0.0.1:{localport}" in line:
+                    msg = f"✅ Port `{localport}` forwarded to: `{line.split(' -> ')[1].strip()}`"
                     break
-
-            msg = (
-                f"⚙️ Creating your VPS...
-
-"
-                f"🔐 **SSH Details:**
-"
-                f"IP: `{ip}`
-"
-                f"Port: `{port}`
-"
-                f"User: `root`
-"
-                f"Pass: `{password}`
-"
-                f"Hostname: `{hostname}`
-"
-                f"Forwarded via: `playit.gg`"
-            )
-
-            # Save data
-            data = load_data()
-            data[user_id] = {
-                "ip": ip,
-                "port": port,
-                "user": "root",
-                "pass": password,
-                "hostname": hostname
-            }
-            save_data(data)
-
-            await interaction.user.send(msg)
-            await interaction.followup.send("✅ VPS created. Details sent in DM.")
-
+            await interaction.followup.send(msg)
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {str(e)}")
-
-@bot.command()
-async def myvps(ctx):
-    uid = str(ctx.author.id)
-    data = load_data()
-    index, found, msg = 1, False, ""
-
-    for owner, user_data in data.items():
-        for vps in user_data.get("vps", []):
-            if owner == uid or uid in user_data.get("shared_with", []):
-                msg += f"**#{index} VPS (Owner: {owner})**\nHostname: `{vps['hostname']}`\nIP: `{vps['ip']}` Port: `{vps['port']}`\nRAM: `{vps['ram']}` Status: `{vps['status']}` OS: `{vps['os']}`\n\n"
-                found = True
-                index += 1
-    await ctx.send(msg if found else "❌ You have no VPS or shared VPS.")
-
-@bot.command()
-async def start(ctx, vps_number: int): await change_status(ctx, vps_number, "running")
-@bot.command()
-async def stop(ctx, vps_number: int): await change_status(ctx, vps_number, "stopped")
-
-async def change_status(ctx, vps_number, new_status):
-    uid = str(ctx.author.id)
-    data = load_data()
-    index = 1
-    for owner, user_data in data.items():
-        for vps in user_data["vps"]:
-            if owner == uid or uid in user_data["shared_with"]:
-                if index == vps_number:
-                    vps["status"] = new_status
-                    save_data(data)
-                    await ctx.send(f"✅ VPS #{vps_number} is now `{new_status}`.")
-                    return
-                index += 1
-    await ctx.send("❌ VPS not found.")
-
-@bot.command()
-async def reinstall(ctx, vps_number: int, os_name: str):
-    if os_name not in ["Ubuntu-22.04", "Debian-12"]:
-        await ctx.send("❌ OS must be 'Ubuntu-22.04' or 'Debian-12'.")
-        return
-
-    uid = str(ctx.author.id)
-    data = load_data()
-    index = 1
-    for owner, user_data in data.items():
-        for vps in user_data["vps"]:
-            if owner == uid or uid in user_data["shared_with"]:
-                if index == vps_number:
-                    vps["os"] = os_name
-                    save_data(data)
-                    await ctx.send(f"✅ VPS #{vps_number} reinstalled with `{os_name}`.")
-                    return
-                index += 1
-    await ctx.send("❌ VPS not found.")
-
-@bot.command()
-async def share(ctx, owner_id: str, target_id: str):
-    data = load_data()
-    if owner_id in data:
-        if target_id not in data[owner_id]["shared_with"]:
-            data[owner_id]["shared_with"].append(target_id)
-            save_data(data)
-            await ctx.send("✅ VPS shared.")
-        else:
-            await ctx.send("⚠️ Already shared.")
-    else:
-        await ctx.send("❌ Owner not found.")
-
-@bot.command()
-async def unshare(ctx, owner_id: str, target_id: str):
-    data = load_data()
-    if owner_id in data and target_id in data[owner_id]["shared_with"]:
-        data[owner_id]["shared_with"].remove(target_id)
-        save_data(data)
-        await ctx.send("❌ Removed shared access.")
-    else:
-        await ctx.send("❌ Not shared or invalid.")
-
-@bot.command()
-async def list(ctx):
-    if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("❌ Admin only.")
-        return
-    data = load_data()
-    msg = "\n".join([f"User: {uid} - VPSs: {len(data[uid].get('vps', []))} - Location: in" for uid in data])
-    await ctx.send(msg or "No users found.")
-
-@bot.command()
-async def adminadd(ctx, uid: int):
-    if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("❌ Only admins can use this.")
-        return
-    if uid not in ADMIN_IDS:
-        ADMIN_IDS.append(uid)
-        await ctx.send(f"✅ User `{uid}` added as admin.")
-    else:
-        await ctx.send("⚠️ Already admin.")
-
-@bot.command()
-async def role(ctx, uid: str):
-    data = load_data()
-    vps_count = len(data.get(uid, {}).get("vps", []))
-    await ctx.send(f"👤 User `{uid}` has `{vps_count}` VPS.")
-
-@bot.command()
-async def create_text(ctx, name: str, *, message: str):
-    if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("❌ Admin only.")
-        return
-    texts = load_texts()
-    texts[name] = message
-    save_texts(texts)
-    await ctx.send(f"✅ Saved text `{name}`.")
-
-@bot.command()
-async def text(ctx, name: str):
-    texts = load_texts()
-    await ctx.send(texts.get(name, "❌ Text not found."))
-
-@bot.command()
-async def ping(ctx):
-    await ctx.send(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
 
 bot.run(TOKEN)
