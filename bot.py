@@ -1,150 +1,192 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
-import paramiko
 import json
 import os
-from datetime import datetime
+import random
 
-# CONFIG
-TOKEN = "YOUR_BOT_TOKEN"
-VPS_IP = "YOUR_VPS_IP"
-VPS_ROOT_PASSWORD = "YOUR_VPS_PASSWORD"
-BASE_PORT = 2200
-DATA_FILE = "users.json"
+TOKEN = "BOT_TOKEN"
+DATA_FILE = "vps_users.json"
+TEXT_FILE = "texts.json"
+ADMIN_IDS = [1159037240622723092]  # replace with your admin user ID(s)
 
-intents = discord.Intents.default()
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree
-used_ports = set()
-running_times = {}
 
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE) as f:
-            return json.load(f)
-    return {}
+    return json.load(open(DATA_FILE)) if os.path.exists(DATA_FILE) else {}
 
 def save_data(data):
-    with open(DATA_FILE, 'w') as f:
+    with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-@bot.event
-async def on_ready():
-    await tree.sync()
-    print("Bot is ready")
+def load_texts():
+    return json.load(open(TEXT_FILE)) if os.path.exists(TEXT_FILE) else {}
 
-@tree.command(name="create-vps", description="Create a new VPS user")
-@app_commands.describe(
-    hostname="Your hostname (e.g., myserver)",
-    ram="Amount of RAM (e.g., 2GB)",
-    password="Password for SSH user"
-)
-async def create_vps(interaction: discord.Interaction, hostname: str, ram: str, password: str):
-    user_id = str(interaction.user.id)
-    username = hostname.lower()
-    port = BASE_PORT + len(load_data())
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        ssh.connect(VPS_IP, username='root', password=VPS_ROOT_PASSWORD)
-        commands = f"""
-        useradd -m {username}
-        echo '{username}:{password}' | chpasswd
-        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-        echo 'Port {port}' >> /etc/ssh/sshd_config
-        echo -e 'Match User {username}\n    AllowTcpForwarding yes\n    X11Forwarding yes' >> /etc/ssh/sshd_config
-        systemctl restart ssh
-        """
-        ssh.exec_command(commands)
-        ssh.close()
+def save_texts(data):
+    with open(TEXT_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-        data = load_data()
-        data[user_id] = {"username": username, "port": port, "password": password, "hostname": hostname, "ram": ram}
-        save_data(data)
-
-        await interaction.response.send_message("✅ VPS details sent to your DM!", ephemeral=True)
-        await interaction.user.send(
-            f"✅ **VPS Created Successfully!**\n\n"
-            f"🔹 **IP**: `{VPS_IP}`\n"
-            f"🔹 **Port**: `{port}`\n"
-            f"🔹 **User**: `{username}`\n"
-            f"🔹 **Pass**: `{password}`\n"
-            f"🔹 **Hostname**: `{hostname}`\n"
-            f"🔹 **RAM**: `{ram}`"
-        )
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
-
-@tree.command(name="myvps", description="Manage your VPS")
-async def myvps(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
+@bot.command()
+async def create_vps(ctx, hostname: str, ram: str, password: str):
+    user_id = str(ctx.author.id)
     data = load_data()
-    if user_id not in data:
-        await interaction.response.send_message("❌ You have not created a VPS yet!", ephemeral=True)
+    is_admin = ctx.author.id in ADMIN_IDS
+
+    if user_id in data and not is_admin and data[user_id].get("vps"):
+        await ctx.send("❌ You already have a VPS.")
         return
 
-    info = data[user_id]
-    embed = discord.Embed(title="🖥️ Your VPS", description=f"**Hostname**: `{info['hostname']}`\n**Port**: `{info['port']}`", color=0x00ff00)
-    if user_id in running_times:
-        uptime = datetime.now() - running_times[user_id]
-        embed.add_field(name="Status", value=f"🟢 Running\n⏱️ Uptime: {uptime}", inline=False)
+    ip = f"{random.randint(100,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+    port = random.randint(20000, 40000)
+
+    vps_entry = {
+        "hostname": hostname,
+        "ram": ram,
+        "password": password,
+        "ip": ip,
+        "port": port,
+        "location": "in",
+        "status": "running",
+        "os": "Ubuntu-22.04"
+    }
+
+    if user_id in data:
+        data[user_id]["vps"].append(vps_entry)
     else:
-        embed.add_field(name="Status", value="🔴 Stopped", inline=False)
+        data[user_id] = {"vps": [vps_entry], "shared_with": []}
 
-    class ReinstallDropdown(discord.ui.Select):
-        def __init__(self):
-            options = [
-                discord.SelectOption(label="Ubuntu-22.04", value="ubuntu"),
-                discord.SelectOption(label="Debian-12", value="debian")
-            ]
-            super().__init__(placeholder="Choose OS", options=options)
+    save_data(data)
+    await ctx.send("⚙️ Creating your VPS...")
+    await ctx.author.send(f"""✅ VPS Created:
+IP: `{ip}`
+Port: `{port}`
+User: `root`
+Pass: `{password}`
+Hostname: `{hostname}`
+RAM: `{ram}`
+OS: `Ubuntu-22.04`
+UserID: `{user_id}`""")
 
-        async def callback(self, interaction2):
-            await reinstall_vps(info['username'], self.values[0])
-            await interaction2.response.send_message(f"🔁 VPS reinstalled with {self.values[0]}", ephemeral=True)
+@bot.command()
+async def myvps(ctx):
+    uid = str(ctx.author.id)
+    data = load_data()
+    index, found, msg = 1, False, ""
 
-    async def start_vps():
-        running_times[user_id] = datetime.now()
-        return "VPS started!"
+    for owner, user_data in data.items():
+        for vps in user_data.get("vps", []):
+            if owner == uid or uid in user_data.get("shared_with", []):
+                msg += f"**#{index} VPS (Owner: {owner})**\nHostname: `{vps['hostname']}`\nIP: `{vps['ip']}` Port: `{vps['port']}`\nRAM: `{vps['ram']}` Status: `{vps['status']}` OS: `{vps['os']}`\n\n"
+                found = True
+                index += 1
+    await ctx.send(msg if found else "❌ You have no VPS or shared VPS.")
 
-    async def stop_vps():
-        running_times.pop(user_id, None)
-        return "VPS stopped!"
+@bot.command()
+async def start(ctx, vps_number: int): await change_status(ctx, vps_number, "running")
+@bot.command()
+async def stop(ctx, vps_number: int): await change_status(ctx, vps_number, "stopped")
 
-    view = discord.ui.View()
+async def change_status(ctx, vps_number, new_status):
+    uid = str(ctx.author.id)
+    data = load_data()
+    index = 1
+    for owner, user_data in data.items():
+        for vps in user_data["vps"]:
+            if owner == uid or uid in user_data["shared_with"]:
+                if index == vps_number:
+                    vps["status"] = new_status
+                    save_data(data)
+                    await ctx.send(f"✅ VPS #{vps_number} is now `{new_status}`.")
+                    return
+                index += 1
+    await ctx.send("❌ VPS not found.")
 
-    @discord.ui.button(label="Start", style=discord.ButtonStyle.success)
-    async def start_button(button, interaction2):
-        msg = await start_vps()
-        await interaction2.response.send_message(f"✅ {msg}", ephemeral=True)
+@bot.command()
+async def reinstall(ctx, vps_number: int, os_name: str):
+    if os_name not in ["Ubuntu-22.04", "Debian-12"]:
+        await ctx.send("❌ OS must be 'Ubuntu-22.04' or 'Debian-12'.")
+        return
 
-    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
-    async def stop_button(button, interaction2):
-        msg = await stop_vps()
-        await interaction2.response.send_message(f"⛔ {msg}", ephemeral=True)
+    uid = str(ctx.author.id)
+    data = load_data()
+    index = 1
+    for owner, user_data in data.items():
+        for vps in user_data["vps"]:
+            if owner == uid or uid in user_data["shared_with"]:
+                if index == vps_number:
+                    vps["os"] = os_name
+                    save_data(data)
+                    await ctx.send(f"✅ VPS #{vps_number} reinstalled with `{os_name}`.")
+                    return
+                index += 1
+    await ctx.send("❌ VPS not found.")
 
-    @discord.ui.button(label="Reinstall", style=discord.ButtonStyle.primary)
-    async def reinstall_button(button, interaction2):
-        dropdown = discord.ui.View()
-        dropdown.add_item(ReinstallDropdown())
-        await interaction2.response.send_message("Choose OS to reinstall:", view=dropdown, ephemeral=True)
-
-    view.add_item(start_button)
-    view.add_item(stop_button)
-    view.add_item(reinstall_button)
-
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-async def reinstall_vps(username, os_choice):
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(VPS_IP, username='root', password=VPS_ROOT_PASSWORD)
-    if os_choice == "ubuntu":
-        reinstall_cmd = f"echo Reinstalling Ubuntu for {username}"
+@bot.command()
+async def share(ctx, owner_id: str, target_id: str):
+    data = load_data()
+    if owner_id in data:
+        if target_id not in data[owner_id]["shared_with"]:
+            data[owner_id]["shared_with"].append(target_id)
+            save_data(data)
+            await ctx.send("✅ VPS shared.")
+        else:
+            await ctx.send("⚠️ Already shared.")
     else:
-        reinstall_cmd = f"echo Reinstalling Debian for {username}"
-    ssh.exec_command(reinstall_cmd)
-    ssh.close()
+        await ctx.send("❌ Owner not found.")
+
+@bot.command()
+async def unshare(ctx, owner_id: str, target_id: str):
+    data = load_data()
+    if owner_id in data and target_id in data[owner_id]["shared_with"]:
+        data[owner_id]["shared_with"].remove(target_id)
+        save_data(data)
+        await ctx.send("❌ Removed shared access.")
+    else:
+        await ctx.send("❌ Not shared or invalid.")
+
+@bot.command()
+async def list(ctx):
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("❌ Admin only.")
+        return
+    data = load_data()
+    msg = "\n".join([f"User: {uid} - VPSs: {len(data[uid].get('vps', []))} - Location: in" for uid in data])
+    await ctx.send(msg or "No users found.")
+
+@bot.command()
+async def adminadd(ctx, uid: int):
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("❌ Only admins can use this.")
+        return
+    if uid not in ADMIN_IDS:
+        ADMIN_IDS.append(uid)
+        await ctx.send(f"✅ User `{uid}` added as admin.")
+    else:
+        await ctx.send("⚠️ Already admin.")
+
+@bot.command()
+async def role(ctx, uid: str):
+    data = load_data()
+    vps_count = len(data.get(uid, {}).get("vps", []))
+    await ctx.send(f"👤 User `{uid}` has `{vps_count}` VPS.")
+
+@bot.command()
+async def create_text(ctx, name: str, *, message: str):
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("❌ Admin only.")
+        return
+    texts = load_texts()
+    texts[name] = message
+    save_texts(texts)
+    await ctx.send(f"✅ Saved text `{name}`.")
+
+@bot.command()
+async def text(ctx, name: str):
+    texts = load_texts()
+    await ctx.send(texts.get(name, "❌ Text not found."))
+
+@bot.command()
+async def ping(ctx):
+    await ctx.send(f"🏓 Pong! `{round(bot.latency * 1000)}ms`")
 
 bot.run(TOKEN)
