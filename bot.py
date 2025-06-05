@@ -30,64 +30,64 @@ class VPSManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @bot.command(name="create-vps", description=",**🧊 Creating Vps .....")
+    
+    @app_commands.command(name="create-vps", description="Create a VPS with SSH using tmate and playit.gg")
     async def create_vps(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        user_id = str(interaction.user.id)
 
-        # Generate random credentials
-        password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+        password = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
         hostname = f"vps-{random.randint(1000,9999)}"
 
-        # Start tmate session
-        tmate_process = subprocess.Popen(["tmate", "-F"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-        # Start playit agent
-        playit_process = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-        # Wait for playit to initialize
-        await asyncio.sleep(5)  # Adjust as necessary for playit to establish the tunnel
-
-        # Retrieve playit public IP and port
-        # This assumes playit outputs the public IP and port to stdout
-        # Adjust parsing as per actual playit output
-        playit_output = ""
         try:
-            playit_output = playit_process.stdout.readline()
-            while playit_output:
-                if "Forwarding TCP" in playit_output:
+            tmate_proc = subprocess.Popen(["tmate", "-F"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            playit_proc = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            await asyncio.sleep(5)
+
+            ip, port = "N/A", "N/A"
+            for line in playit_proc.stdout:
+                if "Forwarding TCP" in line:
+                    ip_port = line.strip().split()[3]
+                    ip, port = ip_port.split(":")
                     break
-                playit_output = playit_process.stdout.readline()
+
+            msg = (
+                f"⚙️ Creating your VPS...
+
+"
+                f"🔐 **SSH Details:**
+"
+                f"IP: `{ip}`
+"
+                f"Port: `{port}`
+"
+                f"User: `root`
+"
+                f"Pass: `{password}`
+"
+                f"Hostname: `{hostname}`
+"
+                f"Forwarded via: `playit.gg`"
+            )
+
+            # Save data
+            data = load_data()
+            data[user_id] = {
+                "ip": ip,
+                "port": port,
+                "user": "root",
+                "pass": password,
+                "hostname": hostname
+            }
+            save_data(data)
+
+            await interaction.user.send(msg)
+            await interaction.followup.send("✅ VPS created. Details sent in DM.")
+
         except Exception as e:
-            await interaction.followup.send(f"Error retrieving creating details: {e}")
-            return
+            await interaction.followup.send(f"❌ Error: {str(e)}")
 
-        # Extract IP and port from playit_output
-        # Example line: Forwarding TCP from 123.456.789.012:2222 to localhost:22
-        try:
-            parts = playit_output.strip().split()
-            public_ip_port = parts[3]
-            ip, port = public_ip_port.split(":")
-        except Exception as e:
-            await interaction.followup.send(f"Error parsing creating output: {e}")
-            return
-
-        # Send SSH details to user
-        message = (
-            f"🔐 **SSH Details:**\n"
-            f"IP: `{ip}`\n"
-            f"Port: `{port}`\n"
-            f"User: `root`\n"
-            f"Pass: `{password}`\n"
-            f"Hostname: `{hostname}`\n"
-            f"Forwarded via: `playit.gg`"
-        )
-        await interaction.followup.send(message)
-
-        # Note: In a real implementation, you should handle process termination and cleanup
-
-async def setup(bot):
-    await bot.add_cog(VPSManager(bot))
-    
 @bot.command()
 async def myvps(ctx):
     uid = str(ctx.author.id)
