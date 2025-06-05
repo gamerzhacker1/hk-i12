@@ -26,47 +26,68 @@ def save_texts(data):
     with open(TEXT_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-@bot.command()
-async def create_vps(ctx, hostname: str, ram: str, password: str):
-    user_id = str(ctx.author.id)
-    data = load_data()
-    is_admin = ctx.author.id in ADMIN_IDS
+class VPSManager(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 
-    if user_id in data and not is_admin and data[user_id].get("vps"):
-        await ctx.send("❌ You already have a VPS.")
-        return
+    @bot.command(name="create-vps", description=",**🧊 Creating Vps .....")
+    async def create_vps(self, interaction: discord.Interaction):
+        await interaction.response.defer()
 
-    ip = f"{random.randint(100,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
-    port = random.randint(20000, 40000)
+        # Generate random credentials
+        password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+        hostname = f"vps-{random.randint(1000,9999)}"
 
-    vps_entry = {
-        "hostname": hostname,
-        "ram": ram,
-        "password": password,
-        "ip": ip,
-        "port": port,
-        "location": "in",
-        "status": "running",
-        "os": "Ubuntu-22.04"
-    }
+        # Start tmate session
+        tmate_process = subprocess.Popen(["tmate", "-F"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    if user_id in data:
-        data[user_id]["vps"].append(vps_entry)
-    else:
-        data[user_id] = {"vps": [vps_entry], "shared_with": []}
+        # Start playit agent
+        playit_process = subprocess.Popen(["./playit-linux-amd64"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    save_data(data)
-    await ctx.send("⚙️ Creating your VPS...")
-    await ctx.author.send(f"""✅ VPS Created:
-IP: `{ip}`
-Port: `{port}`
-User: `root`
-Pass: `{password}`
-Hostname: `{hostname}`
-RAM: `{ram}`
-OS: `Ubuntu-22.04`
-UserID: `{user_id}`""")
+        # Wait for playit to initialize
+        await asyncio.sleep(5)  # Adjust as necessary for playit to establish the tunnel
 
+        # Retrieve playit public IP and port
+        # This assumes playit outputs the public IP and port to stdout
+        # Adjust parsing as per actual playit output
+        playit_output = ""
+        try:
+            playit_output = playit_process.stdout.readline()
+            while playit_output:
+                if "Forwarding TCP" in playit_output:
+                    break
+                playit_output = playit_process.stdout.readline()
+        except Exception as e:
+            await interaction.followup.send(f"Error retrieving creating details: {e}")
+            return
+
+        # Extract IP and port from playit_output
+        # Example line: Forwarding TCP from 123.456.789.012:2222 to localhost:22
+        try:
+            parts = playit_output.strip().split()
+            public_ip_port = parts[3]
+            ip, port = public_ip_port.split(":")
+        except Exception as e:
+            await interaction.followup.send(f"Error parsing creating output: {e}")
+            return
+
+        # Send SSH details to user
+        message = (
+            f"🔐 **SSH Details:**\n"
+            f"IP: `{ip}`\n"
+            f"Port: `{port}`\n"
+            f"User: `root`\n"
+            f"Pass: `{password}`\n"
+            f"Hostname: `{hostname}`\n"
+            f"Forwarded via: `playit.gg`"
+        )
+        await interaction.followup.send(message)
+
+        # Note: In a real implementation, you should handle process termination and cleanup
+
+async def setup(bot):
+    await bot.add_cog(VPSManager(bot))
+    
 @bot.command()
 async def myvps(ctx):
     uid = str(ctx.author.id)
